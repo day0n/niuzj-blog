@@ -9,6 +9,8 @@ paginate = 5
   avatar = '/favicon-192x192.png'
   name = 'niuzj'
   bio = '技术博客'
+  github = 'day0n'
+  twitter = 'hohohteniu'
 
 [menu]
   [[menu.main]]
@@ -16,3 +18,8 @@ paginate = 5
     name = "关于"
     url = "/about/"
     weight = 10
+  [[menu.main]]
+    identifier = "contact"
+    name = "联系"
+    url = "mailto:niuzj0@gmail.com"
+    weight = 20
