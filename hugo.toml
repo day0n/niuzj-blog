@@ -15,11 +15,11 @@ paginate = 5
 [menu]
   [[menu.main]]
     identifier = "about"
-    name = "关于"
+    name = "About"
     url = "/about/"
     weight = 10
   [[menu.main]]
     identifier = "contact"
-    name = "联系"
+    name = "Contact"
     url = "mailto:niuzj0@gmail.com"
     weight = 20
