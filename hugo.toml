@@ -1,44 +1,47 @@
 baseURL = 'https://niuzj.org/'
 languageCode = 'zh-cn'
 title = 'niuzj'
-theme = 'PaperMod'
+theme = 'terminal'
+
+paginate = 5
 
 [params]
-  env = "production"
-  description = "niuzj 的技术博客"
-  author = "niuzj"
-  defaultTheme = "auto"
-  ShowReadingTime = true
-  ShowShareButtons = false
-  ShowPostNavLinks = true
-  ShowBreadCrumbs = true
-  ShowCodeCopyButtons = true
-  ShowToc = true
+  contentTypeName = "posts"
+  themeColor = "orange"
+  showMenuItems = 3
+  fullWidthTheme = false
+  centerTheme = true
+  autoCover = true
+  showLastUpdated = false
 
-  [params.homeInfoParams]
-    Title = "Hey 👋"
-    Content = "欢迎来到我的技术博客"
+[params.logo]
+  logoText = "niuzj"
+  logoHomeLink = "/"
 
-  [[params.socialIcons]]
-    name = "github"
-    url = "https://github.com/day0n"
+[languages]
+  [languages.zh]
+    languageName = "中文"
+    title = "niuzj"
 
-[menu]
-  [[menu.main]]
-    identifier = "archives"
-    name = "归档"
-    url = "/archives/"
-    weight = 10
-  [[menu.main]]
-    identifier = "tags"
-    name = "标签"
-    url = "/tags/"
-    weight = 20
-  [[menu.main]]
-    identifier = "search"
-    name = "搜索"
-    url = "/search/"
-    weight = 30
+    [languages.zh.params]
+      subtitle = "技术博客"
+      owner = "niuzj"
+      keywords = ""
+      copyright = ""
+      menuMore = "更多"
+      readMore = "阅读更多"
+      readOtherPosts = "查看其他文章"
+      newerPosts = "更新的文章"
+      olderPosts = "更早的文章"
+      missingContentMessage = "页面未找到..."
+      missingBackButtonLabel = "返回首页"
 
-[outputs]
-  home = ["HTML", "RSS", "JSON"]
+    [languages.zh.menu]
+      [[languages.zh.menu.main]]
+        identifier = "about"
+        name = "关于"
+        url = "/about"
+      [[languages.zh.menu.main]]
+        identifier = "blog"
+        name = "博客"
+        url = "/posts"
