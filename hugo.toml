@@ -1,47 +1,18 @@
 baseURL = 'https://niuzj.org/'
 languageCode = 'zh-cn'
 title = 'niuzj'
-theme = 'terminal'
-
+theme = 'paper'
 paginate = 5
 
 [params]
-  contentTypeName = "posts"
-  themeColor = "orange"
-  showMenuItems = 3
-  fullWidthTheme = false
-  centerTheme = true
-  autoCover = true
-  showLastUpdated = false
+  color = 'linen'
+  avatar = '/favicon-192x192.png'
+  name = 'niuzj'
+  bio = '技术博客'
 
-[params.logo]
-  logoText = "niuzj"
-  logoHomeLink = "/"
-
-[languages]
-  [languages.zh]
-    languageName = "中文"
-    title = "niuzj"
-
-    [languages.zh.params]
-      subtitle = "技术博客"
-      owner = "niuzj"
-      keywords = ""
-      copyright = ""
-      menuMore = "更多"
-      readMore = "阅读更多"
-      readOtherPosts = "查看其他文章"
-      newerPosts = "更新的文章"
-      olderPosts = "更早的文章"
-      missingContentMessage = "页面未找到..."
-      missingBackButtonLabel = "返回首页"
-
-    [languages.zh.menu]
-      [[languages.zh.menu.main]]
-        identifier = "about"
-        name = "关于"
-        url = "/about"
-      [[languages.zh.menu.main]]
-        identifier = "blog"
-        name = "博客"
-        url = "/posts"
+[menu]
+  [[menu.main]]
+    identifier = "about"
+    name = "关于"
+    url = "/about/"
+    weight = 10
