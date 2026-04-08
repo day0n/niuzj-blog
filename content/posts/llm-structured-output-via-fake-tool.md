@@ -198,7 +198,7 @@ Executor 处理:
 
 ## 为什么 LLM 能同时返回文字和 Tool Call？
 
-这个我实测验证过。用 Gemini 2.0 Flash 测的：
+这个我实测验证过。用 Gemini 3.1 Flash 测的：
 
 **无依赖的多个 tool call，模型一次全吐出来：**
 
