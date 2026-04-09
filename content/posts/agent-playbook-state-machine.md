@@ -49,7 +49,7 @@ collect_requirements → build_script → run_script → review_script
 
 ### 方案 B：代码来记
 
-状态存在数据库里（我们用的是 `session.metadata`），每轮只给 LLM 当前步骤的指令。
+状态存在数据库里，每轮只给 LLM 当前步骤的指令。
 
 ```
 方案 A（LLM 记）：
@@ -57,80 +57,94 @@ collect_requirements → build_script → run_script → review_script
   LLM 从对话历史猜 "我大概做到第 6 步了？"
 
 方案 B（代码记）：
-  session.metadata["playbook"] = {current_step: "run_image"}
-  只注入 "当前步骤：运行图片模块，调用 run_workflow"
+  数据库里存 {current_step: "run_image"}
+  只注入 "当前步骤：运行图片模块"
 ```
 
 方案 B 的状态不会丢、不会猜错、不占多余 token。这就是状态机的价值。
 
-## 怎么做
+## 整体架构
 
-我们的实现借鉴了 [Burr](https://github.com/DAGWorks-Inc/burr)（Apache 孵化的 Python FSM 框架）的核心设计，但做了简化，嵌入到已有的 Agent 架构里。
+状态机不替换 Agent 的任何能力，它是**叠加**上去的一层：
 
-### 数据模型：4 个 dataclass
-
-```python
-from dataclasses import dataclass, field
-from typing import Any
-
-@dataclass(frozen=True)
-class Transition:
-    """一条边"""
-    target: str
-    condition: dict[str, Any] | None = None  # None = 无条件
-
-@dataclass(frozen=True)
-class Step:
-    """一个步骤"""
-    id: str
-    name: str
-    instruction: str                         # 注入给 Agent 的指令
-    transitions: tuple[Transition, ...] = ()
-    advance_mode: str = "manual"             # "auto" | "manual"
-    auto_advance_on: tuple[str, ...] = ()    # auto 模式触发的 tool 名
-
-@dataclass(frozen=True)
-class Definition:
-    """一套完整的 Playbook 定义"""
-    id: str
-    name: str
-    description: str
-    steps: tuple[Step, ...]
-    initial_step: str
-
-@dataclass
-class State:
-    """运行时状态，存 session.metadata["playbook"]"""
-    playbook_id: str
-    current_step: str
-    data: dict[str, Any] = field(default_factory=dict)
-    step_history: list[str] = field(default_factory=list)
-    completed: bool = False
+```
+┌─────────────────────────────────────────────────────┐
+│  Playbook 层（状态机）                                │
+│  - 每轮注入当前步骤指令到 Agent 上下文                 │
+│  - Agent 执行完后检查是否自动推进                      │
+│  - 不限制 Agent 的任何原有能力                        │
+├─────────────────────────────────────────────────────┤
+│  Agent 能力层                                        │
+│  - 所有原有 tools 可用（搜索、读文件、调子 Agent 等）   │
+│  - 所有 skills 可用                                   │
+│  - LLM 推理 + tool calling                           │
+├─────────────────────────────────────────────────────┤
+│  基础设施层                                          │
+│  - Agent Loop（每轮处理循环）                         │
+│  - Session（对话历史 + metadata 持久化）               │
+│  - Prompt Builder（消息组装）                         │
+└─────────────────────────────────────────────────────┘
 ```
 
-`Transition` 的 `condition` 就是 Burr 里 `when()` 的简化版——`{"approved": True}` 表示 `state.data["approved"] == True` 时走这条边。`None` 表示无条件跳转。
+Playbook 激活后，Agent 的 tool 集合 = 原有全部 tools + 一个 `playbook` tool。Agent 在 Playbook 模式下依然可以搜索、读文件、加载 skill。用户问了个无关问题，Agent 回答完继续 Playbook——因为状态在数据库里，不会因为聊了别的就丢失。
 
-### 状态转移：遍历 transitions，匹配第一条
+## 每轮的处理流程
 
-```python
-def _advance(self, defn, state):
-    step = self._get_step(defn, state.current_step)
-    for t in step.transitions:
-        if self._check_condition(t.condition, state.data):
-            state.step_history.append(state.current_step)
-            state.current_step = t.target
-            return True
-    return False
-
-def _check_condition(self, condition, data):
-    if condition is None:
-        return True
-    return all(data.get(k) == v for k, v in condition.items())
+```
+用户发消息
+  │
+  ├─ ① 加载 Session → 读取 metadata 里的 Playbook 状态
+  │     → {current_step: "review_script", data: {requirements: "..."}}
+  │
+  ├─ ② Engine 生成当前步骤的上下文文本
+  │     → 进度条 + 当前步骤指令 + 已收集数据摘要
+  │
+  ├─ ③ 上下文文本注入到 Agent 的消息列表里
+  │     （和长期记忆、历史摘要一样的注入机制）
+  │
+  ├─ ④ Agent 正常执行：LLM 推理 + tool calling
+  │     → 看到步骤指令 + 用户消息 → 决定怎么做
+  │
+  ├─ ⑤ 执行完后检查推进：
+  │     ├─ AUTO 步骤：检测 tools_used → 自动推进
+  │     └─ MANUAL 步骤：Agent 调了 playbook tool → 已推进
+  │
+  └─ ⑥ Session 保存 → 状态持久化
 ```
 
-就这么简单。回退也是这个机制——`condition={"approved": False}` 匹配时 target 指向前面的步骤，对 engine 来说"回退"和"前进"没有区别，都是状态转移。
+关键点：**步骤 ④ 里 Agent 的执行方式完全没变**。它还是正常调 LLM、正常调 tool。状态机只是在输入端加了指令，在输出端检查了推进条件。
 
-### 上下文注入：每轮只给当前步骤
+## 核心设计
+
+### 四个概念
+
+整个系统只有四个概念：
+
+**Transition（转移）**：一条边，从当前步骤到目标步骤，可以带条件。`condition={"approved": true}` 表示满足时走这条边，`condition=None` 表示无条件。
+
+**Step（步骤）**：一个节点，包含注入给 Agent 的指令文本、出边列表、推进模式（auto/manual）。
+
+**Definition（定义）**：一套完整的 Playbook，包含所有步骤和入口步骤 ID。不可变。
+
+**State（状态）**：运行时数据，记录当前在哪一步、已完成哪些步骤、跨步骤共享的数据。可变，存在 Session 里。
+
+### 状态转移机制
+
+Engine 的核心逻辑就一个函数——遍历当前步骤的 transitions，匹配第一条满足条件的：
+
+```
+_advance(state):
+  当前步骤 = 找到 state.current_step 对应的 Step
+  遍历 step.transitions:
+    如果 condition 匹配 state.data → 执行转移，返回 true
+  没有匹配的 → 返回 false
+```
+
+条件匹配的语义借鉴了 Burr 的 `when()`：`condition={"approved": true}` 就是检查 `state.data["approved"] == true`。多个 key 是 AND 关系。`None` 是无条件。
+
+回退也是这个机制——`condition={"approved": false}` 匹配时 target 指向前面的步骤。对 engine 来说"回退"和"前进"没有区别，都是状态转移。
+
+### 上下文注入
 
 Agent 每轮收到的动态上下文长这样：
 
@@ -153,121 +167,63 @@ Agent 每轮收到的动态上下文长这样：
   - requirements: 30秒旅行vlog，轻松风格
 ```
 
-这段文字通过 `build_messages()` 注入到对话历史前面，和 memory、context_summary 一样的机制。Agent 不需要从历史推断进度——进度条明确写在那里。
+这段文字注入到对话历史前面。Agent 不需要从历史推断进度——进度条明确写在那里。
 
-### 一个 tool 搞定所有操作
+### 一个 tool 管理全部
 
-Agent 通过一个 `playbook` tool 管理整个生命周期：
+Agent 通过一个 `playbook` tool 管理整个生命周期，用 `action` 参数区分操作：
 
-```python
-# 启动
-playbook(action="start", playbook_id="ugc_video")
-
-# 推进（带数据）
-playbook(action="advance", step_data={"approved": true})
-
-# 回退（也是推进，只是条件匹配到回退的边）
-playbook(action="advance", step_data={"approved": false})
-
-# 取消
-playbook(action="cancel")
+```
+playbook(action="start", playbook_id="ugc_video")     → 启动
+playbook(action="advance", step_data={"approved": true})  → 推进
+playbook(action="advance", step_data={"approved": false}) → 回退
+playbook(action="cancel")                                  → 取消
 ```
 
-tool 的 `description` 和 `parameters.enum` 从 Engine 动态生成——加新 Playbook 不需要改 tool 代码。
+tool 的可用 Playbook 列表从 Engine 动态生成——加新 Playbook 不需要改 tool 代码。
 
 ### 两种推进模式
 
-**MANUAL**：Agent 调 `playbook(action="advance")` 推进。用于需要判断的步骤（收集需求、审核结果）。
+**MANUAL**：Agent 调 `playbook(action="advance")` 推进。用于需要判断的步骤，比如收集需求、审核结果。
 
-**AUTO**：Agent 调了特定 tool 后自动推进。比如 `run_script` 步骤的 `auto_advance_on=("run_workflow",)`，Agent 调完 `run_workflow` 后 engine 自动推进到 `review_script`，不需要 Agent 额外调 `advance`。
-
-```python
-# loop.py 里，Agent 执行完后：
-if self._playbook_engine.try_auto_advance(state, tools_used):
-    session.metadata["playbook"] = state.to_dict()
-```
+**AUTO**：Agent 调了特定 tool 后自动推进，不需要额外操作。比如"运行脚本"步骤配置了 `auto_advance_on=("run_workflow",)`，Agent 调完 `run_workflow` 后 engine 自动推进到"审核脚本"。
 
 ## 条件分支和回退
 
-transitions 是有序列表，第一条匹配的执行。这意味着你可以声明任意复杂的路由：
+transitions 是有序列表，第一条匹配的执行。可以声明任意复杂的路由：
 
-```python
-# 三种走向
-Step(
-    id="review_script",
-    transitions=(
-        Transition(target="build_image",   condition={"decision": "approve"}),
-        Transition(target="revise_script", condition={"decision": "revise"}),
-        Transition(target="build_script",  condition={"decision": "redo"}),
-    ),
-)
-
-# 多条件 AND
-Transition(target="premium", condition={"style": "vlog", "quality": "high"})
-
-# 兜底 default
-Transition(target="ask_again")  # 没有 condition = 无条件
-```
-
-Agent 调 `playbook(action="advance", step_data={"decision": "revise"})` 时，engine 遍历 transitions，匹配到第二条，跳到 `revise_script`。全部声明式，不需要写 if-else。
-
-## 和 Agent 原有能力的关系
-
-状态机是**叠加**在 Agent 上的，不是替换：
+**多分支**：审核后三种走向——满意、微调、重做：
 
 ```
-┌─────────────────────────────────────┐
-│  Playbook 层（状态机）               │
-│  - 每轮注入当前步骤指令              │
-│  - 检查自动推进                      │
-│  - 不限制 Agent 的任何能力           │
-├─────────────────────────────────────┤
-│  Agent 能力层                       │
-│  - 所有原有 tools 可用               │
-│  - 所有 skills 可用                  │
-│  - LLM 推理 + tool calling          │
-├─────────────────────────────────────┤
-│  基础设施层                         │
-│  - AgentLoop + AgentExecutor        │
-│  - Session + PromptBuilder          │
-└─────────────────────────────────────┘
+review_script 的 transitions:
+  → build_image    当 decision="approve"
+  → revise_script  当 decision="revise"
+  → build_script   当 decision="redo"
 ```
 
-Playbook 激活后，Agent 的 tool 集合是原有的全部 tools + 一个 `playbook` tool。Agent 在 Playbook 模式下依然可以搜索、读文件、加载 skill。用户问了个无关问题，Agent 回答完继续 Playbook——因为状态在 `session.metadata` 里，不会因为聊了别的就丢失。
+Agent 调 `playbook(action="advance", step_data={"decision": "revise"})` 时，engine 匹配到第二条，跳到微调步骤。
+
+**多条件 AND**：`condition={"style": "vlog", "quality": "high"}` 表示两个条件同时满足才走。
+
+**兜底 default**：最后一条不带 condition 的 transition 作为兜底，前面都不匹配时走这条。
+
+**分支汇合**：多条分支的最后一步都指向同一个目标步骤，自然汇合。
+
+全部声明式，不需要写 if-else。
 
 ## 加新 Playbook 的成本
 
-写一个 Python 文件，定义 Definition + Steps，加到注册表里：
-
-```python
-# creato/core/playbook/definitions/ugc_video.py
-UGC_VIDEO = Definition(
-    id="ugc_video",
-    name="UGC 视频制作",
-    description="脚本→生图→生视频的三模块流水线",
-    initial_step="collect_requirements",
-    steps=(
-        Step(id="collect_requirements", name="收集需求", ...),
-        Step(id="build_script", name="构建脚本模块", ...),
-        # ...
-    ),
-)
-
-# definitions/__init__.py
-ALL_DEFINITIONS = [UGC_VIDEO]
-```
-
-不需要改 engine、不需要改 loop、不需要改 tool。`playbook` tool 的 description 自动更新，Agent 自动能看到新选项。
+写一个定义文件，声明步骤和转移条件，注册到列表里。不需要改 engine、不需要改 Agent Loop、不需要改 tool。`playbook` tool 的可用列表自动更新，Agent 自动能看到新选项。
 
 ## 这套方案的来源
 
 调研了 30+ 个开源项目后提炼出来的。几个关键参考：
 
-- **Burr**（~2k stars）：纯 FSM 框架，`Action + State + when() + halt_before` 的设计直接启发了我们的 `Step + Transition + condition`
-- **claude-workflow**：YAML 状态机驱动 Claude Code，验证了"每步返回 prompt 指导 Agent"的模式可行
-- **Lang*（28.7k stars）：`interrupt() + Command(resume=)` 是最成熟的暂停/恢复方案，但对我们来说太重了
-- **PocketFlow**（10.4k stars）：100 行核心代码的极简 FSM，`post()` 返回字符串决定路由的设计很优雅
+- **[Burr](https://github.com/DAGWorks-Inc/burr)**（Apache 孵化，~2k stars）：纯 FSM 框架，`Action + State + when() + halt_before` 的设计直接启发了我们的核心模型
+- **[claude-workflow](https://github.com/AxGord/claude-workflow)**：YAML 状态机驱动 Claude Code，验证了"每步返回 prompt 指导 Agent"的模式可行
+- **[LangGraph](https://github.com/langchain-ai/langgraph)**（28.7k stars）：`interrupt() + Command(resume=)` 是最成熟的暂停/恢复方案，但引入整个 LangGraph 生态太重了
+- **[PocketFlow](https://github.com/The-Pocket/PocketFlow)**（10.4k stars）：100 行核心代码的极简 FSM，`post()` 返回字符串决定路由的设计很优雅
 
-最终选了 Burr 的模式做简化——因为它最干净，声明式 transitions + 条件路由 + halt 暂停，和我们的 chatflow 架构（每轮用户消息触发一次处理）天然匹配。
+最终选了 Burr 的模式做简化——声明式 transitions + 条件路由 + halt 暂停，和 chatflow 架构（每轮用户消息触发一次处理）天然匹配。
 
-整个实现大概 300 行 Python，改了 2 个现有文件（loop.py 加了 ~25 行，builder.py 加了 3 行）。状态机不是什么高深的东西，但用对了地方，能让 Agent 的多步骤流程从"靠 LLM 记忆"变成"靠代码保证"。
+整个实现大概 300 行代码。状态机不是什么高深的东西，但用对了地方，能让 Agent 的多步骤流程从"靠 LLM 记忆"变成"靠代码保证"。
