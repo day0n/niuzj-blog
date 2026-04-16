@@ -174,7 +174,7 @@ tools（工具定义） → system（系统提示） → messages（对话消息
 
 每段有自己独立的缓存状态。改了其中一段，不一定所有缓存都废掉。但因为是前缀匹配，前面的段失效了，后面的段一定跟着失效。
 
-Anthropic 官方文档给了一张失效表，直接看这个最清楚：
+[Anthropic 官方文档](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#caching-strategies-and-considerations)给了一张失效表，直接看这个最清楚：
 
 | 哪些变化 | 工具缓存 | 系统缓存 | 消息缓存 | 影响 |
 |---|---|---|---|---|
